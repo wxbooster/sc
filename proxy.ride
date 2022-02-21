@@ -1,0 +1,270 @@
+{-# STDLIB_VERSION 5 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+let dAppAddress = Address(base58'3PPNhHYkkEy13gRWDCaruQyhNbX2GrjYSyV')
+let wxAssetId = base58'Atqv59EYzjFGuitKVnMRk6H8FukjoV3ktPorbEys25on'
+let wxbAssetId = base58'wxbassetid'
+let giveawayAssetId = base58'Atqv59EYzjFGuitKVnMRk6H8FukjoV3ktPorbEys25on'
+let wxLockAddress = Address(base58'3PJL8Hn8LACaSBWLQ3UVhctA5cTQLBFwBAP')
+let teamFeeAddress = Address(base58'teamfeeaddress')
+
+let adminPubKey1 = base58'pubkey1'
+let adminPubKey2 = base58'pubkey2'
+let adminPubKey3 = base58'pubkey3'
+let adminPubKey4 = base58'pubkey4'
+
+@Callable(i)
+func stakeLP() = {
+  let callerAddressString = toString(i.caller)
+  let isWhitelisted = valueOrElse(getBoolean(callerAddressString+"_whitelisted"), false)
+  let lpAssetId = valueOrElse(getString(callerAddressString+"_assetId"), "")
+
+  if(isWhitelisted && size(i.payments) == 1 && i.payments[0].amount > 0 && i.payments[0].assetId == fromBase58String(lpAssetId))
+    then {
+
+      strict stakeLPCall = invoke(dAppAddress, "stake", nil, [AttachedPayment(i.payments[0].assetId, i.payments[0].amount)])
+      let balance = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_balance"), 0) + i.payments[0].amount
+
+      (
+        [
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_balance", balance)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func unstakeLP(amount: Int) = {
+  let callerAddressString = toString(i.caller)
+  let isWhitelisted = valueOrElse(getBoolean(callerAddressString+"_whitelisted"), false)
+
+  if(isWhitelisted)
+    then {
+      let lpAssetId = valueOrElse(getString(callerAddressString+"_assetId"), "")
+
+      strict unstakeLPCall = invoke(dAppAddress, "unstake", [lpAssetId, amount], nil)
+      let balance = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_balance"), 0) - amount
+
+      (
+        [
+          ScriptTransfer(i.caller, amount, fromBase58String(lpAssetId)),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_balance", balance)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func claim() = {
+  let callerAddressString = toString(i.caller)
+  let isWhitelisted = valueOrElse(getBoolean(callerAddressString+"_whitelisted"), false)
+  if(isWhitelisted)
+    then {
+      let lpAssetId = valueOrElse(getString(callerAddressString+"_assetId"), "")
+
+      strict wxBalance = assetBalance(this, wxAssetId)
+      strict claimWXCall = invoke(dAppAddress, "claimWx", [lpAssetId], nil)
+      strict claimedWXAmount = assetBalance(this, wxAssetId) - wxBalance
+
+      let totalClaimedWXPool = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_total_claimed_wx"), 0) + claimedWXAmount
+      let totalClaimedWX = valueOrElse(getInteger(this, "total_claimed_wx"), 0) + claimedWXAmount
+
+      let lockFeeRate = getIntegerValue(this, "lock_fee")
+      let teamFeeRate = getIntegerValue(this, "team_fee")
+      let lockFee = fraction(claimedWXAmount, lockFeeRate, 100)
+      let teamFee = fraction(claimedWXAmount, teamFeeRate, 100)
+
+      let totalCollectedFeePool = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_total_collected_fee"), 0) + lockFee + teamFee
+      let totalCollectedFee = valueOrElse(getInteger("total_collected_fee"), 0) + lockFee + teamFee
+      let totalLockFeePool = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_total_lock_fee"), 0) + lockFee
+      let totalLockFee = valueOrElse(getInteger("total_lock_fee"), 0) + lockFee
+      let totalTeamFeePool = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_total_team_fee"), 0) + teamFee
+      let totalTeamFee = valueOrElse(getInteger("total_team_fee"), 0) + teamFee
+
+      strict wxLockCall = invoke(wxLockAddress, "increaseLock", [0], [AttachedPayment(wxAssetId, lockFee)])
+      let totalLockedWX = valueOrElse(getInteger("total_locked_wx"), 0) + lockFee
+
+      let wxbAllocation = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_wxb_allocation"), 0)
+      let totalClaimedWXBPool = valueOrElse(getInteger(callerAddressString+"_"+lpAssetId+"_total_claimed_wxb"), 0) + wxbAllocation
+      let totalClaimedWXB = valueOrElse(getInteger("total_claimed_wxb"), 0) + wxbAllocation
+
+      (
+        [
+          ScriptTransfer(i.caller, (claimedWXAmount - lockFee - teamFee), wxAssetId),
+          ScriptTransfer(teamFeeAddress, teamFee, wxAssetId),
+          ScriptTransfer(i.caller, wxbAllocation, wxbAssetId),
+          IntegerEntry("total_locked_wx", totalLockedWX),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_total_claimed_wx", totalClaimedWXPool),
+          IntegerEntry("total_claimed_wx", totalClaimedWX),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_total_claimed_wxb", totalClaimedWXBPool),
+          IntegerEntry("total_claimed_wxb", totalClaimedWXB),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_total_collected_fee", totalCollectedFeePool),
+          IntegerEntry("total_collected_fee", totalCollectedFee),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_total_lock_fee", totalLockFeePool),
+          IntegerEntry("total_lock_fee", totalLockFee),
+          IntegerEntry(callerAddressString+"_"+lpAssetId+"_total_team_fee", totalTeamFeePool),
+          IntegerEntry("total_team_fee", totalTeamFee)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func init() = {
+  let initialized = valueOrElse(getBoolean("initialized"), false)
+  if(!initialized)
+    then {
+
+      strict firstLock = invoke(wxLockAddress, "lock", [2102400], [AttachedPayment(i.payments[0].assetId, i.payments[0].amount)])
+
+      (
+        [
+          BooleanEntry("initialized", true),
+          IntegerEntry("it_all_started_in_this_block", height),
+          IntegerEntry("total_locked_wx", i.payments[0].amount),
+          IntegerEntry("lock_duration", 2102400 + height),
+          IntegerEntry("lock_fee", 15),
+          IntegerEntry("team_fee", 0)
+        ],
+        unit
+      )
+
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func setFee(lockFee: Int, teamFee: Int) = {
+  if(i.caller == this)
+    then {
+      (
+        [
+          IntegerEntry("lock_fee", lockFee),
+          IntegerEntry("team_fee", teamFee)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func whitelist(whitelistAddress: String, assetId: String, allocation: Int) = {
+  if(i.caller == this)
+    then {
+      (
+        [
+          BooleanEntry(whitelistAddress+"_whitelisted", true),
+          StringEntry(whitelistAddress+"_assetId", assetId),
+          IntegerEntry(whitelistAddress+"_"+assetId+"_wxb_allocation", allocation)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func removeWhitelist(whitelistAddress: String) = {
+  if(i.caller == this)
+    then {
+      (
+        [
+          BooleanEntry(whitelistAddress+"_whitelisted", false)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func setAllocation(amount: Int, whitelistAddress: String, assetId: String) = {
+  if(i.caller == this)
+    then {
+      (
+        [
+          IntegerEntry(whitelistAddress+"_"+assetId+"_wxb_allocation", amount)
+        ]
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func giveaway() = {
+  let callerAddressString = toString(i.caller)
+  let isWhitelisted = valueOrElse(getBoolean(callerAddressString+"_whitelisted"), false)
+
+  if(isWhitelisted && size(i.payments) == 1 && i.payments[0].assetId == giveawayAssetId && i.payments[0].amount > 0 )
+    then {
+
+      strict wxLockCall = invoke(wxLockAddress, "increaseLock", [0], [AttachedPayment(i.payments[0].assetId, i.payments[0].amount)])
+
+      let totalLockedWX = valueOrElse(getInteger("total_locked_wx"), 0) + i.payments[0].amount
+      let totalGiveawayWX = valueOrElse(getInteger("total_giveaway_wx"), 0) + i.payments[0].amount
+      (
+        [
+          IntegerEntry("total_locked_wx", totalLockedWX),
+          IntegerEntry("total_giveaway_wx", totalGiveawayWX)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func increaseLockDuration(duration: Int) = {
+  if(containsElement([adminPubKey1, adminPubKey2, adminPubKey3, adminPubKey4], i.callerPublicKey))
+    then {
+
+      strict increaseLockDurationCall = invoke(wxLockAddress, "increaseLock", [duration], nil)
+
+      let lockDuration = getIntegerValue("lock_duration") + duration
+
+      (
+        [
+          IntegerEntry("lock_duration", lockDuration)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+
+@Verifier(tx)
+func verify () = {
+  let adminPubKey1Signed = if (sigVerify(tx.bodyBytes, tx.proofs[0], adminPubKey1))
+    then 1
+    else 0
+  let adminPubKey2Signed = if (sigVerify(tx.bodyBytes, tx.proofs[1], adminPubKey2))
+    then 1
+    else 0
+  let adminPubKey3Signed = if (sigVerify(tx.bodyBytes, tx.proofs[2], adminPubKey3))
+    then 1
+    else 0
+  let adminPubKey4Signed = if (sigVerify(tx.bodyBytes, tx.proofs[3], adminPubKey4))
+    then 1
+    else 0
+  ((adminPubKey1Signed + adminPubKey2Signed + adminPubKey3Signed + adminPubKey4Signed) >= 3)
+}
+        

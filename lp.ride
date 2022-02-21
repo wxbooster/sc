@@ -1,0 +1,486 @@
+{-# STDLIB_VERSION 5 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+let lpAssetId = base58'assetid'
+let wxAssetId = base58'Atqv59EYzjFGuitKVnMRk6H8FukjoV3ktPorbEys25on'
+let wxbAssetId = base58'wxbassetid'
+let proxyAddress = Address(base58'proxyaddress')
+let roundHeight = 10080
+let targetBlock = 3397380
+let limit = 100000000000000000
+
+let adminPubKey1 = base58'pubkey1'
+let adminPubKey2 = base58'pubkey2'
+let adminPubKey3 = base58'pubkey3'
+let adminPubKey4 = base58'pubkey4'
+
+@Callable(i)
+func deposit() = {
+  let isDepositLocked = valueOrElse(getBoolean("deposit_locked"), false)
+  let previousBalance = valueOrElse(getInteger("total_balance"), 0)
+  let isValidBlock = height < targetBlock
+  let isInitialized = valueOrElse(getBoolean("initialized"), false)
+  let isFirstBlockReached = height >= valueOrElse(getInteger("first_block"), 0)
+  if(!isDepositLocked && isInitialized && isFirstBlockReached && size(i.payments) == 1 && i.payments[0].amount > 0 && i.payments[0].assetId == lpAssetId && isValidBlock && (previousBalance + i.payments[0].amount) <= limit)
+  then {
+    let startBlock = getIntegerValue("start_block")
+
+    func getWalletPreviousShare() = {
+      let lastDepositBlock = valueOrElse(getInteger(toString(i.caller)+"_last_deposit_block"), 0)
+      let lastWithdrawBlock = valueOrElse(getInteger(toString(i.caller)+"_last_withdraw_block"), 0)
+
+      let previousShare = if(lastDepositBlock != 0 && lastDepositBlock < startBlock && lastWithdrawBlock < startBlock)
+        then {
+          let walletBalance = valueOrElse(getInteger(toString(i.caller)+"_balance"), 0)
+          toBigInt(walletBalance) * toBigInt(roundHeight)
+        } else {
+          parseBigIntValue(valueOrElse(getString(toString(i.caller)+"_"+toString(startBlock)+"_share"), "0")) 
+        }
+
+      previousShare
+    }
+
+    func getTotalPreviousShare() = {
+      let lastDepositBlock = valueOrElse(getInteger("last_deposit_block"), 0)
+      let lastWithdrawBlock = valueOrElse(getInteger("last_withdraw_block"), 0)
+
+      let previousShare = if(lastDepositBlock != 0 && lastDepositBlock < startBlock && lastWithdrawBlock < startBlock)
+        then {
+          let totalBalance = valueOrElse(getInteger("total_balance"), 0)
+          toBigInt(totalBalance) * toBigInt(roundHeight)
+        } else {
+          parseBigIntValue(valueOrElse(getString(toString(startBlock)+"_total_share"), "0"))
+        }
+
+      previousShare
+    }
+
+    let walletPreviousShare = getWalletPreviousShare()
+    let depositShare = if(height > (startBlock + roundHeight))
+      then {
+        toBigInt(0)
+      } else {
+        toBigInt(i.payments[0].amount) * toBigInt((startBlock + roundHeight) - height)
+      }
+    let walletShare = walletPreviousShare + depositShare
+
+    let walletPreviousBalance = valueOrElse(getInteger(toString(i.caller)+"_balance"), 0)
+    let walletBalance = walletPreviousBalance + i.payments[0].amount
+
+    let totalPreviousShare = getTotalPreviousShare()
+    let totalShare = totalPreviousShare + depositShare
+
+    let previousTotalBalance = valueOrElse(getInteger("total_balance"), 0)
+    let totalBalance = previousTotalBalance + i.payments[0].amount
+
+    strict depositCall = invoke(proxyAddress, "stakeLP", nil, [AttachedPayment(i.payments[0].assetId, i.payments[0].amount)])
+
+    let previousWalletActivity = match (getString(toString(i.caller)+"_activity")) {
+      case p: String => true
+      case n: Unit => false
+    }
+    let walletActivity = if(previousWalletActivity)
+      then {
+        if(!contains(getStringValue(toString(i.caller)+"_activity"), toString(startBlock)))
+          then {
+            getStringValue(toString(i.caller)+"_activity") + "_" + toString(startBlock)
+          } else {
+            getStringValue(toString(i.caller)+"_activity")
+          }
+      } else {
+        toString(startBlock)
+      }
+
+    let firstDeposit = match (getInteger(toString(i.caller)+"_first_deposit")) {
+      case p: Int => p
+      case n: Unit => startBlock
+    }
+
+    (
+      [
+        IntegerEntry(toString(i.caller)+"_balance", walletBalance),
+        StringEntry(toString(i.caller)+"_"+toString(startBlock)+"_share", toString(walletShare)),
+        IntegerEntry(toString(i.caller)+"_"+toString(startBlock)+"_balance", walletBalance),
+        StringEntry(toString(i.caller)+"_activity", walletActivity),
+        IntegerEntry(toString(i.caller)+"_last_deposit_block", startBlock),
+        IntegerEntry(toString(i.caller)+"_first_deposit", firstDeposit),
+        IntegerEntry("total_balance", totalBalance),
+        StringEntry(toString(startBlock)+"_total_share", toString(totalShare)),
+        IntegerEntry("last_deposit_block", startBlock)
+      ],
+      unit
+    )
+  } else {
+    throw("")
+  }
+}
+
+@Callable(i)
+func withdraw(amount: Int) = {
+  let isWithdrawLocked = valueOrElse(getBoolean("withdraw_locked"), false)
+  let walletPreviousBalance = valueOrElse(getInteger(toString(i.caller)+"_balance"), 0)
+  if(!isWithdrawLocked && amount > 0 && walletPreviousBalance > 0 && amount <= walletPreviousBalance)
+    then {
+      let startBlock = getIntegerValue("start_block")
+
+      func getWalletPreviousShare() = {
+        let lastDepositBlock = valueOrElse(getInteger(toString(i.caller)+"_last_deposit_block"), 0)
+        let lastWithdrawBlock = valueOrElse(getInteger(toString(i.caller)+"_last_withdraw_block"), 0)
+
+        let previousShare = if(lastDepositBlock < startBlock && lastWithdrawBlock < startBlock)
+          then {
+            let walletBalance = valueOrElse(getInteger(toString(i.caller)+"_balance"), 0)
+            toBigInt(walletBalance) * toBigInt(roundHeight)
+          } else {
+            parseBigIntValue(valueOrElse(getString(toString(i.caller)+"_"+toString(startBlock)+"_share"), "0") )
+          }
+
+        previousShare
+      }
+
+      func getTotalPreviousShare() = {
+        let lastDepositBlock = valueOrElse(getInteger("last_deposit_block"), 0)
+        let lastWithdrawBlock = valueOrElse(getInteger("last_withdraw_block"), 0)
+
+        let previousShare = if(lastDepositBlock < startBlock && lastWithdrawBlock < startBlock)
+          then {
+            let totalBalance = valueOrElse(getInteger("total_balance"), 0)
+            toBigInt(totalBalance) * toBigInt(roundHeight)
+          } else {
+            parseBigIntValue(valueOrElse(getString(toString(startBlock)+"_total_share"), "0"))
+          }
+
+        previousShare
+      }
+
+      let walletBalance = walletPreviousBalance - amount
+      let withdrawShare = if(height > (startBlock + roundHeight))
+        then {
+          toBigInt(0)
+        } else {
+          toBigInt(amount) * toBigInt((startBlock + roundHeight) - height)
+        }
+      let walletShare = getWalletPreviousShare() - withdrawShare
+
+      let totalBalance = valueOrElse(getInteger("total_balance"), 0) - amount
+      let totalShare = getTotalPreviousShare() - withdrawShare
+      
+      let previousWalletActivity = match (getString(toString(i.caller)+"_activity")) {
+        case p: String => true
+        case n: Unit => false
+      }
+      let walletActivity = if(previousWalletActivity)
+        then {
+          if(!contains(getStringValue(toString(i.caller)+"_activity"), toString(startBlock)))
+            then {
+              getStringValue(toString(i.caller)+"_activity") + "_" + toString(startBlock)
+            } else {
+              getStringValue(toString(i.caller)+"_activity")
+            }
+        } else {
+          toString(startBlock)
+        }
+
+      let isEnded = valueOrElse(getBoolean("ended"), false)
+
+      if(!isEnded)
+        then {
+          strict withdrawCall = invoke(proxyAddress, "unstakeLP", [amount], nil)
+
+          (
+            [
+              ScriptTransfer(i.caller, amount, lpAssetId),
+              IntegerEntry(toString(i.caller)+"_balance", walletBalance),
+              StringEntry(toString(i.caller)+"_"+toString(startBlock)+"_share", toString(walletShare)),
+              IntegerEntry(toString(i.caller)+"_"+toString(startBlock)+"_balance", walletBalance),
+              StringEntry(toString(i.caller)+"_activity", walletActivity),
+              IntegerEntry(toString(i.caller)+"_last_withdraw_block", startBlock),
+              IntegerEntry("total_balance", totalBalance),
+              StringEntry(toString(startBlock)+"_total_share", toString(totalShare)),
+              IntegerEntry("last_withdraw_block", startBlock)
+            ],
+            unit
+          )
+        } else {
+          let endBlock = getIntegerValue("end_block")
+          (
+            [
+              ScriptTransfer(i.caller, amount, lpAssetId),
+              IntegerEntry(toString(i.caller)+"_balance", walletBalance),
+              IntegerEntry(toString(i.caller)+"_last_withdraw_block", endBlock),
+              IntegerEntry("total_balance", totalBalance),
+              IntegerEntry("last_withdraw_block", endBlock)
+            ],
+            unit
+          )
+        }
+
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func end() = {
+  let isEndLocked = valueOrElse(getBoolean("end_locked"), false)
+  let startBlock = getIntegerValue("start_block")
+  let isEnded = valueOrElse(getBoolean("start_block_"+toString(startBlock)+"_ended"), false)
+  let isValidBlock = height >= startBlock + roundHeight
+  if(!isEndLocked && !isEnded && isValidBlock && startBlock < targetBlock)
+    then {
+      strict previousWXAmount = assetBalance(this, wxAssetId)
+      strict previousWXBAmount = assetBalance(this, wxbAssetId)
+      strict claimWXCall = invoke(proxyAddress, "claim", nil , nil)
+      strict roundWXRewardAmount = assetBalance(this, wxAssetId) - previousWXAmount
+      strict roundWXBRewardAmount = assetBalance(this, wxbAssetId) - previousWXBAmount
+
+      let totalWXRewardAmount = valueOrElse(getInteger(this, "total_wx_reward_amount"), 0) + roundWXRewardAmount
+      let totalWXBRewardAmount = valueOrElse(getInteger(this, "total_wxb_reward_amount"), 0) + roundWXBRewardAmount
+
+      let roundShare = match (getString(toString(startBlock)+"_total_share")) {
+        case p: String => p
+        case n: Unit => toString(toBigInt(valueOrElse(getInteger("total_balance"), 0)) * toBigInt(roundHeight))
+      }
+
+      let roundActivity = match (getString("round_activity")) {
+        case p: String => p + "_" + toString(startBlock)
+        case n: Unit => toString(startBlock)
+      }
+
+      let rewardAmount = getIntegerValue("reward_amount")
+
+      if(height >= targetBlock)
+        then {
+          let totalBalance = valueOrElse(getInteger("total_balance"), 0)
+          strict withdrawAll = invoke(proxyAddress, "unstakeLP", [totalBalance], [])
+          
+          (
+            [
+              ScriptTransfer(i.caller, rewardAmount, wxbAssetId),
+              IntegerEntry("start_block_"+toString(startBlock)+"_end_block", height),
+              BooleanEntry("start_block_"+toString(startBlock)+"_ended", true),
+              IntegerEntry("start_block_"+toString(startBlock)+"_wx_reward_amount", roundWXRewardAmount),
+              IntegerEntry("start_block_"+toString(startBlock)+"_wxb_reward_amount", roundWXBRewardAmount),
+              IntegerEntry("total_wx_reward_amount", totalWXRewardAmount),
+              IntegerEntry("total_wxb_reward_amount", totalWXBRewardAmount),
+              StringEntry(toString(startBlock)+"_total_share", roundShare),
+              StringEntry("round_activity", roundActivity),
+              BooleanEntry("ended", true),
+              IntegerEntry("end_block", height)
+            ],
+            unit
+          )
+        } else {
+          (
+            [
+              ScriptTransfer(i.caller, rewardAmount, wxbAssetId),
+              IntegerEntry("start_block_"+toString(startBlock)+"_end_block", height),
+              BooleanEntry("start_block_"+toString(startBlock)+"_ended", true),
+              IntegerEntry("start_block_"+toString(startBlock)+"_wx_reward_amount", roundWXRewardAmount),
+              IntegerEntry("start_block_"+toString(startBlock)+"_wxb_reward_amount", roundWXBRewardAmount),
+              IntegerEntry("total_wx_reward_amount", totalWXRewardAmount),
+              IntegerEntry("total_wxb_reward_amount", totalWXBRewardAmount),
+              StringEntry(toString(startBlock)+"_total_share", roundShare),
+              StringEntry("round_activity", roundActivity),
+              IntegerEntry("start_block", height)
+            ],
+            unit
+          )
+        }
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func claim(startBlock: Int) = {
+  let isClaimLocked = valueOrElse(getBoolean("claim_locked"), false)
+  let isEnded = valueOrElse(getBoolean("start_block_"+toString(startBlock)+"_ended"), false)
+  let isClaimed = valueOrElse(getBoolean(toString(i.caller)+"_"+toString(startBlock)+"_claimed"), false)
+  let firstBlock = getIntegerValue("first_block")
+
+  if(!isClaimLocked && isEnded && !isClaimed && startBlock < targetBlock && startBlock >= firstBlock)
+    then {
+      func getWalletShare() = {
+        let lastDepositBlock = valueOrElse(getInteger(toString(i.caller)+"_last_deposit_block"), 0)
+        let lastWithdrawBlock = valueOrElse(getInteger(toString(i.caller)+"_last_withdraw_block"), 0)
+        
+        let walletShare = if(lastDepositBlock == 0)
+          then {
+            throw("")
+          } else {
+            if(valueOrElse(getString(toString(i.caller)+"_"+toString(startBlock)+"_share"), "0") != "0")
+              then {
+                parseBigIntValue(getStringValue(toString(i.caller)+"_"+toString(startBlock)+"_share"))
+              } else {
+                if(valueOrElse(getString(toString(i.caller)+"_"+toString(startBlock)+"_share"), "-1") == "0")
+                  then {
+                    toBigInt(0)
+                  } else {
+                      if(lastDepositBlock < startBlock && lastWithdrawBlock < startBlock)
+                        then {
+                          let walletBalance = valueOrElse(getInteger(toString(i.caller)+"_balance"), 0)
+                          toBigInt(walletBalance) * toBigInt(roundHeight)
+                        } else {
+                          let firstDeposit = getIntegerValue(toString(i.caller)+"_first_deposit")
+                          if(!(firstDeposit < startBlock))
+                            then {
+                              throw("")
+                            } else {
+                              let rounds = getStringValue("round_activity")
+                              let previousRounds = dropRight(rounds, (size(rounds) + 1) - value(indexOf(rounds, toString(startBlock))))
+                              let theIndexOfTheClosestRound = if(valueOrElse(lastIndexOf(previousRounds, "_"), 0) != 0)
+                                then {
+                                  value(lastIndexOf(previousRounds, "_")) + 1
+                                } else {
+                                  0
+                                }
+                              let closestRound = drop(previousRounds, theIndexOfTheClosestRound)
+
+                              let activities = split(getStringValue(toString(i.caller)+"_activity"), "_")
+
+                              func findClosest(acc: String, next: String) = {
+                                let closest = if(value(parseInt(next)) < value(parseInt(closestRound)) && value(parseInt(next)) > value(parseInt(acc)))
+                                  then {
+                                    next
+                                  } else {
+                                    acc
+                                  }
+
+                                closest
+                              }
+
+                              let closestActivity = if(containsElement(activities, closestRound))
+                                then {
+                                  closestRound
+                                } else {
+                                  let closest = FOLD<53>(activities, "0", findClosest)
+                                  closest
+                                }
+
+                              let theShare = toBigInt(getIntegerValue(toString(i.caller)+"_"+closestActivity+"_balance")) * toBigInt(roundHeight)
+
+                              theShare
+                            }
+                        }
+                  }
+              }
+          }
+
+        walletShare
+      }
+
+      let walletShare = getWalletShare()
+
+      if(walletShare > toBigInt(0))
+        then {
+          let totalShare = parseBigIntValue(getStringValue(toString(startBlock)+"_total_share"))
+
+          let roundTotalWXReward = valueOrElse(getInteger("start_block_"+toString(startBlock)+"_wx_reward_amount"), 0)
+          let roundUserWXReward = toInt(fraction(walletShare, toBigInt(roundTotalWXReward), totalShare))
+
+          let roundTotalWXBReward = valueOrElse(getInteger("start_block_"+toString(startBlock)+"_wxb_reward_amount"), 0)
+          let roundUserWXBReward = toInt(fraction(walletShare, toBigInt(roundTotalWXBReward), totalShare))
+
+          let roundTotalClaimedWX = valueOrElse(getInteger(toString(startBlock)+"_total_claimed_wx_reward_amount"), 0) + roundUserWXReward
+          let totalClaimedWX = valueOrElse(getInteger("total_claimed_wx_reward_amount"), 0) + roundUserWXReward
+
+          let roundTotalClaimedWXB = valueOrElse(getInteger(toString(startBlock)+"_total_claimed_wxb_reward_amount"), 0) + roundUserWXBReward
+          let totalClaimedWXB = valueOrElse(getInteger("total_claimed_wxb_reward_amount"), 0) + roundUserWXBReward
+
+          let userTotalClaimedWX = valueOrElse(getInteger(toString(i.caller)+"_total_claimed_wx_amount"), 0) + roundUserWXReward
+          let userTotalClaimedWXB = valueOrElse(getInteger(toString(i.caller)+"_total_claimed_wxb_amount"), 0) + roundUserWXBReward
+
+          (
+            [
+              ScriptTransfer(i.caller, roundUserWXReward, wxAssetId),
+              ScriptTransfer(i.caller, roundUserWXBReward, wxbAssetId),
+              BooleanEntry(toString(i.caller)+"_"+toString(startBlock)+"_claimed", true),
+              IntegerEntry(toString(i.caller)+"_total_claimed_wx_amount", userTotalClaimedWX),
+              IntegerEntry(toString(startBlock)+"_total_claimed_wx_reward_amount", roundTotalClaimedWX),
+              IntegerEntry("total_claimed_wx_reward_amount", totalClaimedWX),
+              IntegerEntry(toString(i.caller)+"_total_claimed_wxb_amount", userTotalClaimedWXB),
+              IntegerEntry(toString(startBlock)+"_total_claimed_wxb_reward_amount", roundTotalClaimedWXB),
+              IntegerEntry("total_claimed_wxb_reward_amount", totalClaimedWXB)
+            ],
+            unit
+          )
+        } else {
+          throw("")
+        }
+
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func init(startBlock: Int) = {
+  let isInitialized = valueOrElse(getBoolean("initialized"), false)
+  if(!isInitialized && containsElement([adminPubKey1, adminPubKey2, adminPubKey3, adminPubKey4], i.callerPublicKey))
+    then {
+      (
+        [
+          BooleanEntry("initialized", true),
+          IntegerEntry("start_block", startBlock),
+          IntegerEntry("first_block", startBlock),
+          IntegerEntry("reward_amount", 10000000000)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func changeRewardAmount(amount: Int) = {
+  if(containsElement([adminPubKey1, adminPubKey2, adminPubKey3, adminPubKey4], i.callerPublicKey))
+    then {
+      (
+        [
+          IntegerEntry("reward_amount", amount)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Callable(i)
+func lock(deposit: Boolean, withdraw: Boolean, end: Boolean, claim: Boolean) = {
+  if(i.caller == this)
+    then {
+      (
+        [
+          BooleanEntry("deposit_locked", deposit),
+          BooleanEntry("withdraw_locked", withdraw),
+          BooleanEntry("end_locked", end),
+          BooleanEntry("claim_locked", claim)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Verifier(tx)
+func verify () = {
+  let adminPubKey1Signed = if (sigVerify(tx.bodyBytes, tx.proofs[0], adminPubKey1))
+    then 1
+    else 0
+  let adminPubKey2Signed = if (sigVerify(tx.bodyBytes, tx.proofs[1], adminPubKey2))
+    then 1
+    else 0
+  let adminPubKey3Signed = if (sigVerify(tx.bodyBytes, tx.proofs[2], adminPubKey3))
+    then 1
+    else 0
+  let adminPubKey4Signed = if (sigVerify(tx.bodyBytes, tx.proofs[3], adminPubKey4))
+    then 1
+    else 0
+  ((adminPubKey1Signed + adminPubKey2Signed + adminPubKey3Signed + adminPubKey4Signed) >= 3)
+}
+        
