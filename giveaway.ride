@@ -1,0 +1,50 @@
+{-# STDLIB_VERSION 5 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+let giveawayAssetId = base58'Atqv59EYzjFGuitKVnMRk6H8FukjoV3ktPorbEys25on'
+let dAppAddress = Address(base58'proxyaddress')
+let targetBlock = 3397380
+
+let adminPubKey1 = base58'pubkey1'
+let adminPubKey2 = base58'pubkey2'
+let adminPubKey3 = base58'pubkey3'
+let adminPubKey4 = base58'pubkey4'
+
+@Callable(i)
+func giveaway() = {
+  if(height < targetBlock && size(i.payments) == 1 && i.payments[0].assetId == giveawayAssetId && i.payments[0].amount > 0)
+    then {
+      let totalGiveaway = valueOrElse(getInteger(this, "total_giveaway"), 0) + i.payments[0].amount
+      let walletGiveaway = valueOrElse(getInteger(this, toString(i.caller)+"_total_giveaway"), 0) + i.payments[0].amount
+
+      strict giveawayCall = invoke(dAppAddress, "giveaway", nil, [AttachedPayment(giveawayAssetId, i.payments[0].amount)])
+
+      (
+        [
+          IntegerEntry("total_giveaway", totalGiveaway),
+          IntegerEntry(toString(i.caller)+"_total_giveaway", walletGiveaway)
+        ],
+        unit
+      )
+    } else {
+      throw("")
+    }
+}
+
+@Verifier(tx)
+func verify () = {
+  let adminPubKey1Signed = if (sigVerify(tx.bodyBytes, tx.proofs[0], adminPubKey1))
+    then 1
+    else 0
+  let adminPubKey2Signed = if (sigVerify(tx.bodyBytes, tx.proofs[1], adminPubKey2))
+    then 1
+    else 0
+  let adminPubKey3Signed = if (sigVerify(tx.bodyBytes, tx.proofs[2], adminPubKey3))
+    then 1
+    else 0
+  let adminPubKey4Signed = if (sigVerify(tx.bodyBytes, tx.proofs[3], adminPubKey4))
+    then 1
+    else 0
+  ((adminPubKey1Signed + adminPubKey2Signed + adminPubKey3Signed + adminPubKey4Signed) >= 3)
+}
