@@ -146,7 +146,7 @@ func init() = {
 
 @Callable(i)
 func setFee(lockFee: Int, teamFee: Int) = {
-  if(i.caller == this)
+  if(i.caller == this && lockFee <= 15 && lockFee >= 10 && teamFee <= 5 && teamFee >= 0)
     then {
       (
         [
@@ -179,7 +179,8 @@ func whitelist(whitelistAddress: String, assetId: String, allocation: Int) = {
 
 @Callable(i)
 func removeWhitelist(whitelistAddress: String) = {
-  if(i.caller == this)
+  let isWhitelisted = valueOrElse(getBoolean(whitelistAddress+"_whitelisted"), false)
+  if(i.caller == this && isWhitelisted)
     then {
       (
         [
@@ -194,7 +195,8 @@ func removeWhitelist(whitelistAddress: String) = {
 
 @Callable(i)
 func setAllocation(amount: Int, whitelistAddress: String, assetId: String) = {
-  if(i.caller == this)
+  let isWhitelisted = valueOrElse(getBoolean(whitelistAddress+"_whitelisted"), false)
+  if(i.caller == this && isWhitelisted)
     then {
       (
         [
